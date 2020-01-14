@@ -50,9 +50,9 @@ parser.add_argument('-s', '--stampfilepath', required=False, default='./supersta
 parser.add_argument('-p', '--centroidfilepath', required=False, default='./centroids/', type=str, help='File location of ensemble centroid data')
 parser.add_argument('-r', '--regridfactor', required=False, default=2, type=int, help='Regridding factor')
 parser.add_argument('-c', '--centroid', required=True, choices=['e', 't'], type=str, help='Ensemble or target centroid?')
-parser.add_argument('-x', '--exclude', required=False, default=None, nargs='+', choices=np.arange(1,18), type=int, help='Any quarters to cut?') # - no longer using this
+# parser.add_argument('-x', '--exclude', required=False, default=None, nargs='+', choices=np.arange(1,18), type=int, help='Any quarters to cut?') # - no longer using this
 parser.add_argument('-d', '--dims', required=False, default=3, type=int, choices=np.arange(2,20), help='Cutout dimensions')
-parser.add_argument('-m', '--mask', required=False, default=None, type=int, choices=np.arange(6), help=f'Choice of masks from {masks}') # None mask means do all of them - no longer using this
+# parser.add_argument('-m', '--mask', required=False, default=None, type=int, choices=np.arange(6), help=f'Choice of masks from {masks}') # None mask means do all of them - no longer using this
 parser.add_argument('-f', '--figures', required=False, default=True, type=bool, help='Make summary plots?')
 parser.add_argument('-i', '--interactive', required=False, default=False, type=bool, help='Show plot?')
 
@@ -61,10 +61,10 @@ params = parser.parse_args()
 kic = params.kic
 factor = params.regridfactor
 centroid = params.centroid
-missing = params.exclude
+# missing = params.exclude
 cutoutdims = params.dims
 makefigs = params.figures
-mask = params.mask
+# mask = params.mask
 
 cluster = 0
 kic = str(kic)
