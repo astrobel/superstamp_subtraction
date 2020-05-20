@@ -1,6 +1,5 @@
 import numpy as np
 import scipy.interpolate as spi
-# import scipy.misc as spm
 import regrid as rg
 import nancleaner as nc
 import centroid as ct
@@ -69,7 +68,7 @@ def zerocutter(flux, mask, factor): # flux should be time x 5 x 5, mask 5 x 5
 
    return flux, mask
 
-def subtract(flux1, time1, cadence, q, factor, cfilepath, centroid_type, cutoutdims, cluster, isolation): # , mask
+def subtract(flux1, time1, cadence, q, factor, cfilepath, centroid_type, cutoutdims, cluster, isolation):
 
    workingdir = os.getcwd()
 

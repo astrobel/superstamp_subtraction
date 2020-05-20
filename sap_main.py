@@ -80,14 +80,12 @@ kics = members['kic_kepler_id']
 ras = members['ra_2000']
 decs = members['dec_2000']
 teff = members['teff_val']
-Kp = members['kic_kepmag']
-crowding = members['crowding_mag']
+Kps = members['kic_kepmag']
 
 target_ra = ras[kics ==  kic].values[0]
 target_dec = decs[kics == kic].values[0]
+Kp = Kps[kics == kic].values[0]
 cutoutdims = 3
-residuals = crowding/Kp
-isolation = residuals[kics == kic].values[0]
 
 try:
    os.mkdir(str(kic))
@@ -101,40 +99,79 @@ time = []
 x_cent = []
 y_cent = []
 
+### GETTING CROWDING MAGNITUDE
+
+mag = 0
+
+for i, q in enumerate(quarterlist):
+
+   target_ra = ras[kics ==  kic].values[0]
+   target_dec = decs[kics == kic].values[0]
+
+   skip, flux1, time1, eo, w, cadence = cut.cutout(kic, q, params.stampfilepath, cluster, target_ra, target_dec, cutoutdims)
+   if skip == False:
+      mag1, bigflux = magnituder(flux1, time1, refflux, refKp)
+      mag += mag1
+      # print(q, mag1, bigflux)
+      # saving fluxes and times
+      exec("flux1_%d = flux1" % q)
+      exec("time1_%d = time1" % q)
+      exec("cadence_%d = cadence" % q)
+      exec("fitslist_%d = fitslist" % q)
+      exec("w_%d = w" % q)
+      exec("eo_%d = eo" % q)
+   else:
+      emptyquarters.append(q)
+
+for q in emptyquarters:
+   quarterlist.remove(q)
+
+if len(quarterlist) != 0: # this is a useful way to vet for stars that made it onto the list by accident (i.e. they're off the stamps)
+   mag /= len(quarterlist)
+else:
+   sys.exit("No quarters available for this target")
+
+mag_diff = Kp - mag
+if mag_diff > 0:
+   isolation = 0.75/np.power(2.5,mag_diff) + 0.25
+else:
+   isolation = 1
+
+### DOING SAP
+
 raw = np.zeros((1,2))
 masked = np.zeros((1,2))
 means = []
 
 for i, q in enumerate(quarterlist):
 
-   skip, flux1, time1, eo, w, cadence = cut.cutout(kic, q, params.stampfilepath, cluster, target_ra, target_dec, cutoutdims)
-   if skip == False:
-      output, maskarr, avgflux, regridded_base = sap.sapper(flux1, time1, cadence, q, factor, cutoutdims, isolation)
-      tosave = pd.DataFrame(data=output)
-      fileheader = ['cadence', 'time (BJD-2454833)', 'flux']
-      os.chdir(f'./{kic}/')
-      tosave.to_csv(f'kic{kic}_q{q}_{factor}_sap.dat', sep=' ', float_format='%.5f', header=fileheader, index=False)
-      os.chdir('..')
+   exec("flux1 = flux1_%d" % q)
+   exec("time1 = time1_%d" % q)
+   exec("cadence = cadence_%d" % q)
+   exec("w = w_%d" % q)
+   exec("eo = eo_%d" % q)
 
-      # for column in range(nummasks):
-      flux = output[:,2]
-      time = output[:,1]
-      means.append(np.nanmean(flux))
-      time, flux = fx.fixer(q, time, flux, cluster)
-      temp = np.c_[time, flux]
-      raw = np.r_[raw, temp]
-      time, flux = fc.fitandclip(time, flux)
-      temp = np.c_[time, flux]
-      masked = np.r_[masked, temp]
+   output, maskarr, avgflux, regridded_base = sap.sapper(flux1, time1, cadence, q, factor, cutoutdims, isolation)
+   tosave = pd.DataFrame(data=output)
+   fileheader = ['cadence', 'time (BJD-2454833)', 'flux']
+   os.chdir(f'./{kic}/')
+   tosave.to_csv(f'kic{kic}_q{q}_{factor}_sap.dat', sep=' ', float_format='%.5f', header=fileheader, index=False)
+   os.chdir('..')
 
-      avgflux = np.flipud(avgflux)
-      if eo == 0:
-         avgflux = np.fliplr(avgflux)
-   elif skip == True:
-      emptyquarters.append(q)
+   # for column in range(nummasks):
+   flux = output[:,2]
+   time = output[:,1]
+   means.append(np.nanmean(flux))
+   time, flux = fx.fixer(q, time, flux, cluster)
+   temp = np.c_[time, flux]
+   raw = np.r_[raw, temp]
+   time, flux = fc.fitandclip(time, flux)
+   temp = np.c_[time, flux]
+   masked = np.r_[masked, temp]
 
-for q in emptyquarters:
-   quarterlist.remove(q)
+   avgflux = np.flipud(avgflux)
+   if eo == 0:
+      avgflux = np.fliplr(avgflux)
 
 raw = np.delete(raw, 0, axis=0)
 masked = np.delete(masked, 0, axis=0)
@@ -181,6 +218,8 @@ stardata.write(f'B - R = {br[kics==kic].values[0]:.2f}\n')
 stardata.write(f'membership: mean gaussian posterior prob = {meanprob[kics==kic].values[0]:.2f}\n')
 stardata.write(f'high freq noise = {bins[-1]:.2f} ppm\n')
 stardata.write(f'S/N = {max(ampls)/bins[-1]:.2f}\n')
+stardata.write(f'Kp = {Kp}\n')
+stardata.write(f'crowding magnitude = {mag}\n')
 stardata.close()
 os.chdir('..')
 

@@ -7,7 +7,7 @@ import matplotlib.pylab as pl
 from matplotlib.colors import ListedColormap
 import matplotlib.colors as colors
 from matplotlib.ticker import MaxNLocator
-from astropy.stats import LombScargle
+from astropy.timeseries import LombScargle
 from astropy.utils.exceptions import AstropyWarning
 import cutouts as cut
 import subtraction as sub
@@ -44,15 +44,28 @@ class MidpointNormalize(colors.Normalize):
         x, y = [self.vmin, self.midpoint, self.vmax], [0, 0.5, 1]
         return np.ma.masked_array(np.interp(value, x, y))
 
+def magnitude(flux, refflux, refmag):
+   mag = refmag - 2.5 * np.log10(flux/refflux)
+   return mag
+
+def magnituder(flux1, time1, refflux, refmag):
+
+   fluxnew, timenew = nc.nancleaner3d(flux1, time1)
+   avs = np.nansum(np.nansum(fluxnew, axis=1), axis=1)
+   avgflux = np.median(avs)
+   if refflux == 0:
+      refflux = avgflux
+   mag = magnitude(avgflux, refflux, refmag)
+   
+   return mag, avgflux
+
 parser = argparse.ArgumentParser(description='Perform image subtraction on NGC 6791 and NGC 6819 targets.')
 parser.add_argument('-k', '--kic', required=True, type=int, help='KIC ID')
 parser.add_argument('-s', '--stampfilepath', required=False, default='./superstamps/', type=str, help='File location of superstamps')
 parser.add_argument('-p', '--centroidfilepath', required=False, default='./centroids/', type=str, help='File location of ensemble centroid data')
 parser.add_argument('-r', '--resamplefactor', required=False, default=2, type=int, help='Resampling factor')
 parser.add_argument('-c', '--centroid', required=True, choices=['e', 't'], type=str, help='Ensemble or target centroid?')
-# parser.add_argument('-x', '--exclude', required=False, default=None, nargs='+', choices=np.arange(1,18), type=int, help='Any quarters to cut?') # - no longer using this
 parser.add_argument('-d', '--dims', required=False, default=3, type=int, choices=np.arange(2,20), help='Cutout dimensions')
-# parser.add_argument('-m', '--mask', required=False, default=None, type=int, choices=np.arange(6), help=f'Choice of masks from {masks}') # None mask means do all of them - no longer using this
 parser.add_argument('-f', '--figures', required=False, default=True, type=bool, help='Make summary plots?')
 parser.add_argument('-i', '--interactive', required=False, default=False, type=bool, help='Show plot?')
 
@@ -61,19 +74,23 @@ params = parser.parse_args()
 kic = params.kic
 factor = params.regridfactor
 centroid = params.centroid
-# missing = params.exclude
 cutoutdims = params.dims
 makefigs = params.figures
-# mask = params.mask
 
 cluster = 0
 kic = str(kic)
 if kic.startswith('2'):
    cluster = 6791
    quarterlist = list(np.arange(1, 18))
+   # refstar = 2436824
+   refflux = 29291.74088601505
+   refKp = 14.515
 elif kic.startswith('5') or kic.startswith('4'):
    cluster = 6819
    quarterlist = [1,2,3,4,5,7,8,9,11,12,13,15,16,17]
+   # refstar = 5111949
+   refflux = 106088.38055590221
+   refKp = 12.791
 if missing != None:
    quarterlist = [i for i in quarterlist if i not in missing]
 kic = int(kic)
@@ -89,64 +106,98 @@ kics = members['kic_kepler_id']
 ras = members['ra_2000']
 decs = members['dec_2000']
 teff = members['teff_val']
-Kp = members['kic_kepmag']
-crowding = members['crowding_mag']
+Kps = members['kic_kepmag']
+# crowding = members['crowding_mag'] # still gives value, but has been replaced with on-the-fly calculation
 
 target_ra = ras[kics ==  kic].values[0]
 target_dec = decs[kics == kic].values[0]
-residuals = crowding/Kp
-isolation = residuals[kics == kic].values[0]
+Kp = Kps[kics == kic].values[0]
 
 try:
    os.mkdir(str(kic))
 except FileExistsError:
    pass
 
-
 kern = 100 # for smoothing
 sigma = (factor**2) * 2 # for clipping
-nummasks = 1 # to make compatible with single gaussian mask for now - this can be changed
 
 time = []
 x_cent = []
 y_cent = []
 
+### GETTING CROWDING MAGNITUDE
+
+mag = 0
+
+for i, q in enumerate(quarterlist):
+
+   target_ra = ras[kics ==  kic].values[0]
+   target_dec = decs[kics == kic].values[0]
+
+   skip, flux1, time1, eo, w, cadence = cut.cutout(kic, q, params.stampfilepath, cluster, target_ra, target_dec, cutoutdims)
+   if skip == False:
+      mag1, bigflux = magnituder(flux1, time1, refflux, refKp)
+      mag += mag1
+      # saving fluxes and times
+      exec("flux1_%d = flux1" % q)
+      exec("time1_%d = time1" % q)
+      exec("cadence_%d = cadence" % q)
+      exec("fitslist_%d = fitslist" % q)
+      exec("w_%d = w" % q)
+      exec("eo_%d = eo" % q)
+   else:
+      emptyquarters.append(q)
+
+for q in emptyquarters:
+   quarterlist.remove(q)
+
+if len(quarterlist) != 0: # this is a useful way to vet for stars that made it onto the list by accident (i.e. they're off the stamps)
+   mag /= len(quarterlist)
+else:
+   sys.exit("No quarters available for this target")
+
+mag_diff = Kp - mag
+if mag_diff > 0:
+   isolation = 0.75/np.power(2.5,mag_diff) + 0.25
+else:
+   isolation = 1
+
+### DOING SUBTRACTION
 raw = np.zeros((1,2))
 masked = np.zeros((1,2))
 means = []
 
 for i, q in enumerate(quarterlist):
 
-   skip, flux1, time1, eo, w, cadence = cut.cutout(kic, q, params.stampfilepath, cluster, target_ra, target_dec, cutoutdims)
-   if skip == False:
-      output, maskarr, avgflux, regridded_base, xc, yc = sub.subtract(flux1, time1, cadence, q, factor, params.centroidfilepath, centroid, cutoutdims, cluster, isolation) # , mask
-      tosave = pd.DataFrame(data=output)
-      fileheader = ['cadence', 'time (BJD-2454833)', 'flux']
-      os.chdir(f'./{kic}/')
-      tosave.to_csv(f'kic{kic}_q{q}_{factor}_{centroid}.dat', sep=' ', float_format='%.5f', header=fileheader, index=False)
-      os.chdir('..')
+   exec("flux1 = flux1_%d" % q)
+   exec("time1 = time1_%d" % q)
+   exec("cadence = cadence_%d" % q)
+   exec("w = w_%d" % q)
+   exec("eo = eo_%d" % q)
 
-      xc = np.r_[xc, x_cent]
-      yc = np.r_[yc, y_cent]
+   output, maskarr, avgflux, regridded_base, xc, yc = sub.subtract(flux1, time1, cadence, q, factor, params.centroidfilepath, centroid, cutoutdims, cluster, isolation)
+   tosave = pd.DataFrame(data=output)
+   fileheader = ['cadence', 'time (BJD-2454833)', 'flux']
+   os.chdir(f'./{kic}/')
+   tosave.to_csv(f'kic{kic}_q{q}_{factor}_{centroid}.dat', sep=' ', float_format='%.5f', header=fileheader, index=False)
+   os.chdir('..')
 
-      flux = output[:,2]
-      time = output[:,1]
-      means.append(np.nanmean(flux))
-      time, flux = fx.fixer(q, time, flux, cluster)
-      temp = np.c_[time, flux]
-      raw = np.r_[raw, temp]
-      time, flux = fc.fitandclip(time, flux)
-      temp = np.c_[time, flux]
-      masked = np.r_[masked, temp]
+   xc = np.r_[xc, x_cent]
+   yc = np.r_[yc, y_cent]
 
-      avgflux = np.flipud(avgflux)
-      if eo == 0:
-         avgflux = np.fliplr(avgflux)
-   elif skip == True:
-      emptyquarters.append(q)
+   flux = output[:,2]
+   time = output[:,1]
+   means.append(np.nanmean(flux))
+   time, flux = fx.fixer(q, time, flux, cluster)
+   temp = np.c_[time, flux]
+   raw = np.r_[raw, temp]
+   time, flux = fc.fitandclip(time, flux)
+   temp = np.c_[time, flux]
+   masked = np.r_[masked, temp]
 
-for q in emptyquarters:
-   quarterlist.remove(q)
+   avgflux = np.flipud(avgflux)
+   if eo == 0:
+      avgflux = np.fliplr(avgflux)
 
 raw = np.delete(raw, 0, axis=0)
 masked = np.delete(masked, 0, axis=0)
@@ -195,6 +246,8 @@ stardata.write(f'B - R = {br[kics==kic].values[0]:.2f}\n')
 stardata.write(f'membership: mean gaussian posterior prob = {meanprob[kics==kic].values[0]:.2f}\n')
 stardata.write(f'high freq noise = {bins[-1]:.2f} ppm\n')
 stardata.write(f'S/N = {max(ampls)/bins[-1]:.2f}\n')
+stardata.write(f'Kp = {Kp}\n')
+stardata.write(f'crowding magnitude = {mag}\n')
 stardata.close()
 os.chdir('..')
 
